@@ -1,0 +1,79 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Example.cpp" />
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A8773D30-5B02-4A5E-BCA2-68279CD7A338}</ProjectGuid>
+    <TargetFrameworkVersion>v4.6.1</TargetFrameworkVersion>
+    <ProjectName>Example</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <LocalDebuggerEnvironment>PATH=%PATH%;$(QTDIR)\bin</LocalDebuggerEnvironment>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <LocalDebuggerEnvironment>PATH=%PATH%;$(QTDIR)\bin</LocalDebuggerEnvironment>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="..\..\utils\ogxFRAMESPlugin.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="..\..\utils\ogxFRAMESPlugin.props" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros">
+    <FramesSDKDir>$(ProjectDir)..\..\</FramesSDKDir>
+  </PropertyGroup>
+  <PropertyGroup>
+    <LocalDebuggerCommand>$(FramesSDKDir)bin\$(IntDir)QtFRAM3D.exe</LocalDebuggerCommand>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <OptimizeReferences>true</OptimizeReferences>
+      <StackReserveSize Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">100000000</StackReserveSize>
+      <StackCommitSize Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+      </StackCommitSize>
+      <HeapReserveSize Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">100000000</HeapReserveSize>
+      <HeapCommitSize Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+      </HeapCommitSize>
+      <StackReserveSize Condition="'$(Configuration)|$(Platform)'=='Release|x64'">100000000</StackReserveSize>
+      <HeapReserveSize Condition="'$(Configuration)|$(Platform)'=='Release|x64'">100000000</HeapReserveSize>
+      <HeapCommitSize Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+      </HeapCommitSize>
+      <StackCommitSize Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+      </StackCommitSize>
+    </Link>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
