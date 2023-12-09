@@ -18,61 +18,78 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 	/*HARDCODED PARAMETERS AND DATA*/
 	const double HAUSDORF_THRESHOLD = 50000;	// number of points which change version of Hausdorf algorithm
 
-	/*Structure store data of a 3D point with vector of pointers to its neighbours, which make it an element of a graph structure.*/
-	struct Point
-	{
+	/**
+	* Store data of a 3D point with vector of pointers to its neighbours, which make it an element of a graph
+	* structure.\*
+	*/
+	struct Point {
 		Clouds::Point3D xyz;
 		Clouds::Color color;
 		std::vector<Point*> neighbours;
-		int group_number = 0;
-		bool is_calculated = false;
-		bool is_deleted = false;
+		unsigned int groupNumber = 0;
 
-		Point(Clouds::Point3D p_coordinates, Clouds::Color p_color) {
-			xyz = p_coordinates;
-			color = p_color;
-		}
+		Point(Clouds::Point3D coordinates, Clouds::Color color) : xyz(coordinates), color(color) {}
 		bool isReady() const {
-			return is_calculated || is_deleted;
+			return mCalculated || mDeleted;
 		}
-	};
+		bool isCalculated() const {
+			return mCalculated;
+		}
+		bool isDeleted() const {
+			return mDeleted;
+		}
+		void setCalculated() {
+			mCalculated = true;
+		}
+		void setUncalculated() {
+			mCalculated = false;
+		}
+		void setDeleted() {
+			mDeleted = true;
+		}
+		bool isUngrouped() const {
+			return groupNumber == 0;
+		}
 
-	enum class PointState : uint8_t {
-		DELETED,
-		CALCULATED,
-		NOT_CALCULATED,
+	private:
+		bool mCalculated = false;
+		bool mDeleted = false;
 	};
 
 	class FeedbackUpdater {
 	public:
 		FeedbackUpdater() = delete;
-		FeedbackUpdater(Context& context, unsigned int step_number, bool decreasing_growth = false) :
-			context(context),
-			step_number(step_number),
-			decreasing_growth(decreasing_growth)
+		FeedbackUpdater(Context& context, unsigned int stepNumber, bool decreasingGrowth = false) :
+			mContext(context),
+			mStepNumber(stepNumber),
+			mDecreasingGrowth(decreasingGrowth)
 		{}
 
 		void count() {
-			const double last_ratio = 1.0 * counter++ / step_number;
-			const double ratio = 1.0 * counter / step_number;
-			const double percentage = decreasing_growth ? 100 * (1.0 - pow(1.0 - ratio, 10.0)) : 100 * ratio;
-			const double last_percentage = decreasing_growth ? 100 * (1.0 - pow(1.0 - last_ratio, 10.0)) : 100 * last_ratio;
+			const double last_ratio = 1.0 * mCounter++ / mStepNumber;
+			const double ratio = 1.0 * mCounter / mStepNumber;
+			const double percentage = mDecreasingGrowth ? 100 * (1.0 - pow(1.0 - ratio, 10.0)) : 100 * ratio;
+			const double last_percentage = mDecreasingGrowth ? 100 * (1.0 - pow(1.0 - last_ratio, 10.0)): 100 * last_ratio;
 			if (floor(percentage) > floor(last_percentage))
-				context.Feedback().Update(0.01 * percentage);
+				mContext.Feedback().Update(0.01 * percentage);
 		}
 	private:
-		Context& context;
-		unsigned int counter = 0;
-		const unsigned int step_number;
-		const bool decreasing_growth;
+		Context& mContext;
+		unsigned int mCounter = 0;
+		const unsigned int mStepNumber;
+		const bool mDecreasingGrowth;
 	};
 
-	/*Vector of graph elements with points parameters and pointers to their neighbours inside a spherical search kernel. It is used to save the time for searching neighbours in each operation. It might be made one time for many layers with diffrent parameters such as:
+	/**
+	* Vector of graph elements with points parameters and pointers to their neighbours inside a spherical search
+	* kernel. It is used to save the time for searching neighbours in each operation. It might be made one time for
+	* many layers with diffrent parameters such as:
 	* max color gradients in HSV
 	* min points in a group
 	* min neighbous of a point
 	* dimensions of the loudspeaker
-	if only search kernel radius is not	changed and operations are done for the same cloud.*/
+	* if only search kernel radius is not	changed and operations are done for the same cloud.\*
+	*/
 	std::vector<Point> mPointsGraphStructure;
 
 	// parameters
@@ -86,15 +103,20 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 	float mMaxBrightnessGradient = 7.5;
 	float mMaxSaturationGradient = 2.5;
 	float mMaxHueGradient = 180;
-	float mCoverageRate = 0.4;					// additional tolerance of hue and saturation differences for mean HSV=(*,1,1), 10 times smaller for HSV=(*,10,10) etc.
-	float mJoinCoefficient = 0.8;				// maximum ratio of ungrouped point among the neighbours to join the ungrouped point to any of the clusters
-	float mMergeCoefficient = 0.02;				// the higher it is the more clusters will be merged
+	/// additional tolerance of hue and saturation differences for mean HSV=(*,1,1),
+	/// 10 times smaller for HSV=(*,10,10) etc.\*
+	float mCoverageRate = 0.4;
+	/// maximum ratio of ungrouped point among the neighbours to join the ungrouped point to any of the clusters
+	float mJoinCoefficient = 0.8;
+	/// the higher it is the more clusters will be merged
+	float mMergeCoefficient = 0.02;
 	float mSpeakerDimX = 0.18;
 	float mSpeakerDimY = 0.16;
 	float mSpeakerDimZ = 0.12;
 
 	// constructor
-	LoudspeakerSearching() : EasyMethod(L"Mateusz Frejlich", L"The program segments the cloud and recognizes the loudspeaker inside it.\nThe default values of all parameters are best fitted to the tested cloud.")
+	LoudspeakerSearching() : EasyMethod(L"Mateusz Frejlich", L"The program segments the cloud and recognizes the \
+		loudspeaker inside it.\nThe default values of all parameters are best fitted to the tested cloud.")
 	{
 	}
 
@@ -119,90 +141,57 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 	}
 
 	virtual void Run(Context& context) {
-		// get cloud data
 		Clouds::ICloud* pOriginalCloud = GetValidCloud(context, mNodeId);
 		OGX_LINE.Msg(Info, L"All data is correct. Processing has started.");
 
-		// reduce the number of points
 		ResourceID newNodeId;
 		Clouds::ICloud* pCloud = CreateRandomlyReducedCloud(context, pOriginalCloud, newNodeId, mPointsToRemoveRatio);
 		OGX_LINE.Msg(Info, L"Reduced cloud has been done.");
 
-		// create points structure from created cloud
 		BuildPointsGraphStructure(context, newNodeId, mPointsGraphStructure, mMaxDistance);
 		OGX_LINE.Msg(Info, L"Points structure has been done.");
 
-		// create a new layer
-		const String layerName = L"Segmentation";
-		auto layers = pCloud->FindLayers(layerName);
-		auto* pSegmentsLayer = layers.empty() ? pCloud->CreateLayer(layerName, 0.0) : layers[0];
-
-		// reserve memory for results vector
-		Clouds::PointsRange range;
-		pCloud->GetAccess().GetAllPoints(range);
-		std::vector<StoredReal> segmentNumbers;
-		segmentNumbers.reserve(mPointsGraphStructure.size());
-
-		// remove lonely points and smooth the cloud
 		RemoveNoise(context, mPointsGraphStructure, mMinNeighbours, mNeighboursToSmooth);
-
-		// reduce noise in colors using median filter
-		MedianFilterColors(context, mPointsGraphStructure, mMedianFlterSize);
+		FilterColorsByMedian(context, mPointsGraphStructure, mMedianFlterSize);
 		OGX_LINE.Msg(Info, L"Noise filtration has been done.");
 
 		// visualize the cloud smoothing
+		Clouds::PointsRange range;
+		pCloud->GetAccess().GetAllPoints(range);
 		CopyGraphStructuctureToCloud(mPointsGraphStructure, range);
 
-		// make segmentation using Hausdorf algorithm
 		GroupHausdorf(context, mPointsGraphStructure, HAUSDORF_THRESHOLD);
 		OGX_LINE.Msg(Info, L"Segmentation by Hausdorf algorithm has been done.");
 
-		// fill holes with ungrouped points in clusters
 		FillHolesInClusters(context, mPointsGraphStructure);
-
-		// remove too small groups
 		RemoveTooSmallGroups(context, mPointsGraphStructure);
 		OGX_LINE.Msg(Info, L"Removing too small groups has been done.");
 
-		// fill holes made by removing small groups
 		FillHolesInClusters(context, mPointsGraphStructure);
 		OGX_LINE.Msg(Info, L"Filling holes in clusters has been done.");
 
-		// merge clusters
 		MergeClusters(context, mPointsGraphStructure);
 		OGX_LINE.Msg(Info, L"Merging clusters has been done.");
 
-		// change group numbers to subsequent numbers with '0' assigned to ungrouped points
-		TidyUpGroupNumbers(context, segmentNumbers, mPointsGraphStructure);
+		TidyUpGroupNumbers(context, mPointsGraphStructure);
 		OGX_LINE.Msg(Info, L"The ordering of group numbers has been done.");
 
-		// assign all cluster numbers to created layer
-		range.SetLayerVals(segmentNumbers, *pSegmentsLayer);
+		CreateGroupNumbersLayer(pCloud, range, mPointsGraphStructure);
 		OGX_LINE.Msg(Info, L"Whole segmentation process has been finished.");
 
-		// create next layer
+		std::vector<StoredReal> isLoundspeaker;
+		isLoundspeaker.reserve(mPointsGraphStructure.size());
+		FindTheSpeaker(context, isLoundspeaker, mPointsGraphStructure);
+		OGX_LINE.Msg(Info, L"Loudspeaker identification has been done.");
+
 		const String newLayerName = L"Loudspeaker";
 		const auto newLayers = pCloud->FindLayers(newLayerName);
 		auto* pSpeakerLayer = newLayers.empty() ? pCloud->CreateLayer(newLayerName, 0.0) : newLayers[0];
-		std::vector<StoredReal> isSpeaker;
-		isSpeaker.reserve(mPointsGraphStructure.size());
-
-		// find the best fitted cluster to the speaker
-		FindTheSpeaker(context, isSpeaker, mPointsGraphStructure);
-		OGX_LINE.Msg(Info, L"Loudspeaker identification has been done.");
-
-		// mark found cluster in created layer
-		range.SetLayerVals(isSpeaker, *pSpeakerLayer);
+		range.SetLayerVals(isLoundspeaker, *pSpeakerLayer);
 		OGX_LINE.Msg(Info, L"Processing has been finished. No errors.");
-
-		//// check time
-		//auto start = std::chrono::high_resolution_clock::now();
-		//auto stop = std::chrono::high_resolution_clock::now();
-		//auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
-		//auto time = duration.count();
 	}
 
-	/*Function reads data of all points from given node, check their correctness and returns a cloud of these points.*/
+	/// Reads data of all points from given node, check their correctness and returns a cloud of these points.
 	Clouds::ICloud* GetValidCloud(Context& rContext, ResourceID nodeId)	{
 		auto* pNode = rContext.m_project->TransTreeFindNode(nodeId);
 		if (!pNode)
@@ -263,9 +252,12 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 		
 		return pCloud;
 	}
-
-	/*Function makes a new node with given ID, assign to them the cloud with random points from a given cloud with ratio given by a user.*/
-	Clouds::ICloud* CreateRandomlyReducedCloud(Context& rContext, Clouds::ICloud*& rCloud, ResourceID& rNodeId, float pointsToRemoveRatio) const {
+	/**
+	* Makes a new node with given ID, assign to them the cloud with random points from a given cloud with ratio given
+	* by a user.\*
+	*/
+	Clouds::ICloud* CreateRandomlyReducedCloud(Context& rContext, Clouds::ICloud*& rCloud, ResourceID& rNodeId,
+		float pointsToRemoveRatio) const {
 		if (pointsToRemoveRatio == 0.0)
 			return rCloud;
 
@@ -314,9 +306,12 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 
 		return pReducedCloud;
 	}
-
-	/*Function finds neighbours for all the points from the cloud in the given node and makes the lists of graph elements assigned to the vector in this structure.*/
-	void BuildPointsGraphStructure(Context& rContext, ResourceID childNodeId, std::vector<Point>& rGraph, float maxDistance) {
+	/**
+	* Finds neighbours for all the points from the cloud in the given node and makes the lists of graph elements
+	* assigned to the vector in this structure.\*
+	*/
+	void BuildPointsGraphStructure(Context& rContext, ResourceID childNodeId, std::vector<Point>& rGraph,
+		float maxDistance) {
 		auto* pCloud = rContext.m_project->TransTreeFindNode(childNodeId)->GetElement()->GetData<Clouds::ICloud>();
 		Clouds::PointsRange range;
 		pCloud->GetAccess().GetAllPoints(range);
@@ -366,8 +361,7 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 			feedbackUpdater.count();
 		}
 	}
-	
-	/*Function copies all points' data from the graph structure to the given range of the cloud.*/
+	/// Copies all points' data from the graph structure to the given range of the cloud.
 	void CopyGraphStructuctureToCloud(std::vector<Point>& rGraph, Clouds::PointsRange& rRange) {
 		std::vector<Clouds::Point3D> coordinates;
 		std::vector<Clouds::Color> colors;
@@ -380,14 +374,16 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 		rRange.SetXYZ(coordinates);
 		rRange.SetColors(colors);
 	}
-
-	/*Function marks lonely points as 'deleted' and smooths the cloud by projecting all points in the structure to a local fitted sphere or plane.*/
-	void RemoveNoise(Context& rContext, std::vector<Point>& rGraph, int minNeighbours, int neighboursToSmooth)	{
+	/**
+	* Marks lonely points as 'deleted' and smooths the cloud by projecting all points in the structure to a local
+	* fitted sphere or plane.\*
+	*/
+	void RemoveNoise(Context& rContext, std::vector<Point>& rGraph, int minNeighbours, int neighboursToSmooth) {
 		const int numberOfPoints = rGraph.size();
 		FeedbackUpdater feedbackUpdater(rContext, numberOfPoints);
 		for (auto& rPoint : rGraph) {
 			if (rPoint.neighbours.size() < minNeighbours)
-				rPoint.is_deleted = true;
+				rPoint.setDeleted();
 		}
 
 		std::vector<Clouds::Point3D> newCoordinates;
@@ -395,23 +391,24 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 		std::transform(rGraph.begin(), rGraph.end(), std::back_inserter(newCoordinates), [&](Point& rPoint) {
 			const auto& rNeighbours = rPoint.neighbours;
 
-			if (rNeighbours.size() < neighboursToSmooth || rPoint.is_deleted)
+			if (rNeighbours.size() < neighboursToSmooth || rPoint.isDeleted())
 				return rPoint.xyz;
 
 			auto basePoint = rPoint.xyz.cast<double>();
 			std::vector<decltype(basePoint)> nXYZ = { basePoint };
 			nXYZ.reserve(neighboursToSmooth + 1);
-			std::transform(rNeighbours.begin(), rNeighbours.begin() + neighboursToSmooth, std::back_inserter(nXYZ), [](Point* nItr) {
-				return nItr->xyz.cast<double>();
+			std::transform(rNeighbours.begin(), rNeighbours.begin() + neighboursToSmooth, std::back_inserter(nXYZ),
+				[](Point* nItr) {
+					return nItr->xyz.cast<double>();
 				});
 			const auto sphere = Math::CalcBestSphere3D(nXYZ.begin(), nXYZ.end());
 			const auto plane = Math::CalcBestPlane3D(nXYZ.begin(), nXYZ.end());
 
-			const double sqSumSphere = std::accumulate(nXYZ.begin(), nXYZ.end(), 0.0, [&sphere](double init, auto& rPoint) {
+			const double sqSumSphere = std::accumulate(nXYZ.begin(), nXYZ.end(), 0.0, [&](double init, auto& rPoint) {
 				const auto pointOntoSphere = sphere.Project(rPoint).cast<double>();
 				return init + pow(Math::CalcPointToPointDistance3D(pointOntoSphere, rPoint), 2);
 				});
-			const double sqSumPlane = std::accumulate(nXYZ.begin(), nXYZ.end(), 0.0, [&plane](double init, auto& rPoint) {
+			const double sqSumPlane = std::accumulate(nXYZ.begin(), nXYZ.end(), 0.0, [&](double init, auto& rPoint) {
 				const auto point_onto_plane = Math::ProjectPointOntoPlane(plane, rPoint).cast<double>();
 				return init + pow(Math::CalcPointToPointDistance3D(point_onto_plane, rPoint), 2);
 				});
@@ -435,16 +432,15 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 				});
 		}
 	}
-	
-	/*Function filters all points using the median colors of neighbours.*/
-	void MedianFilterColors(Context& rContext, std::vector<Point>& rGraph, int medianFilterSize) {
+	/// Filters all points using the median colors of neighbours.
+	void FilterColorsByMedian(Context& rContext, std::vector<Point>& rGraph, int medianFilterSize) {
 		const int numberOfPoints = rGraph.size();
 		FeedbackUpdater feedbackUpdater(rContext, numberOfPoints);
 		std::vector<Clouds::Color> colors;
 		colors.reserve(numberOfPoints);
 
-		std::transform(rGraph.begin(), rGraph.end(), colors.begin(), [&](const auto& rPoint) {
-			if (rPoint.is_deleted || rPoint.neighbours.size() < medianFilterSize) {
+		std::transform(rGraph.begin(), rGraph.end(), colors.begin(), [&](const Point& rPoint) {
+			if (rPoint.isDeleted() || rPoint.neighbours.size() < medianFilterSize) {
 				feedbackUpdater.count();
 				return rPoint.color;
 			}
@@ -453,27 +449,30 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 			std::vector<WeightedColor> red, green, blue;
 			const auto begin = rPoint.neighbours.begin();
 			const auto pointXYZ = rPoint.xyz.cast<double>();
-			const auto halfWeight = 0.5 * std::accumulate(begin, begin + medianFilterSize, 0.0, [&](double init, Point* pNeighbour) {
-				const double weight = pow(Math::CalcPointToPointDistance3D(pointXYZ, pNeighbour->xyz.cast<double>()), -2.0);
-				red.push_back(WeightedColor(pNeighbour->color.x(), weight));
-				green.push_back(WeightedColor(pNeighbour->color.y(), weight));
-				blue.push_back(WeightedColor(pNeighbour->color.z(), weight));
-				return init + weight;
+			const auto halfWeight = 0.5 * std::accumulate(begin, begin + medianFilterSize, 0.0,
+				[&](double init, Point* pNeighbour) {
+					const auto& rNeighborXYZ = pNeighbour->xyz.cast<double>();
+					const double weight = pow(Math::CalcPointToPointDistance3D(pointXYZ, rNeighborXYZ), -2.0);
+					red.push_back(WeightedColor(pNeighbour->color.x(), weight));
+					green.push_back(WeightedColor(pNeighbour->color.y(), weight));
+					blue.push_back(WeightedColor(pNeighbour->color.z(), weight));
+					return init + weight;
 				});
 
 			std::vector<std::vector<WeightedColor>*> rgb = { &red,&green,&blue };
 			std::vector<double> medianColor;
-			std::transform(rgb.begin(), rgb.end(), std::back_inserter(medianColor), [&](std::vector<WeightedColor>* pChannel) {
-				std::sort(pChannel->begin(), pChannel->end(), [](WeightedColor& rLeft, WeightedColor& rRight) {
-					return rLeft.first > rRight.first;
-					});
+			std::transform(rgb.begin(), rgb.end(), std::back_inserter(medianColor),
+				[&](std::vector<WeightedColor>* pChannel) {
+					std::sort(pChannel->begin(), pChannel->end(), [](WeightedColor& rLeft, WeightedColor& rRight) {
+						return rLeft.first > rRight.first;
+						});
 
-				double currentWeight = 0.0;
-				for (const auto& rColor : *pChannel) {
-					currentWeight += rColor.second;
-					if (currentWeight > halfWeight)
-						return rColor.first;
-				}
+					double currentWeight = 0.0;
+					for (const auto& rColor : *pChannel) {
+						currentWeight += rColor.second;
+						if (currentWeight > halfWeight)
+							return rColor.first;
+					}
 				});
 
 			feedbackUpdater.count();
@@ -483,20 +482,22 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 		for (int i = 0; i < numberOfPoints; ++i)
 			rGraph[i].color = colors[i];
 	}
-
-	/*Function groups the points into clusters choosing one of the implemented recursive Hausdorf algorithm depending on the number of points.*/
+	/**
+	* Groups the points into clusters choosing one of the implemented recursive Hausdorf algorithm depending on the
+	* number of points.\*
+	*/
 	void GroupHausdorf(Context& rContext, std::vector<Point>& rGraph, const double hausdorfThreshold) {
 		// set initial values
 		for (auto& rPoint : rGraph) {
-			rPoint.is_calculated = false;
-			rPoint.group_number = 0;
+			rPoint.setUncalculated();
+			rPoint.groupNumber = 0;
 		}
 		FeedbackUpdater feedbackUpdater(rContext, rGraph.size());
 		int groupCounter = 0;
 
 		// realize Hausdorf algorithm for each point
 		for (auto& rPoint : rGraph) {
-			if (rPoint.group_number != 0 || rPoint.is_deleted)
+			if (!rPoint.isUngrouped() || rPoint.isDeleted())
 				continue;
 			++groupCounter;
 
@@ -507,32 +508,36 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 				GroupHausdorfMixSearch(rPoint, groupCounter, feedbackUpdater);
 		}
 	}
-	
-	/*Function groups points into a cluster with given number, starting from a given point using recursive Hausdorf's algorithm adapted to the graph structure of data. It should not be used for large clouds due to stack overflow.*/
+	/**
+	* Groups points into a cluster with given number, starting from a given point using recursive Hausdorf's algorithm
+	* adapted to the graph structure of data. It should not be used for large clouds due to stack overflow.\*
+	*/
 	void GroupHausdorfDFS(Point& rStartPoint, const int& rGroupCounter, FeedbackUpdater& rFeedbackUpdater) {
 		// relize the algorithm for the point
-		rStartPoint.group_number = rGroupCounter;
+		rStartPoint.groupNumber = rGroupCounter;
 		GroupNeighbours(rStartPoint, rStartPoint.xyz, rFeedbackUpdater);
 
 		// repeate for the neighbours recursively
 		for (auto pNeighbour : rStartPoint.neighbours) {
-			if (pNeighbour->isReady() || pNeighbour->group_number != rStartPoint.group_number)
+			if (pNeighbour->isReady() || pNeighbour->groupNumber != rStartPoint.groupNumber)
 				continue;
 
 			GroupHausdorfDFS(*pNeighbour, rGroupCounter, rFeedbackUpdater);
 		}
 	}
-	
-	/*Function groups points into a cluster with given number, starting from a given point using recursive Hausdorf's algorithm with 2 steps in one iteration of the function. This modification is less clear but prevents stack overflow.*/
+	/**
+	* Groups points into a cluster with given number, starting from a given point using recursive Hausdorf's algorithm
+	* with 2 steps in one iteration of the function. This modification is less clear but prevents stack overflow.\*
+	*/
 	void GroupHausdorfMixSearch(Point& rStartPoint, const int& rGroupCounter, FeedbackUpdater& rFeedbackUpdater) {
 		// relize the algorithm for the point
-		rStartPoint.group_number = rGroupCounter;
+		rStartPoint.groupNumber = rGroupCounter;
 		GroupNeighbours(rStartPoint, rStartPoint.xyz, rFeedbackUpdater);
 
 		// repeate for the neighbours in a loop
 		std::vector<Point*> neighbours;
 		for (auto pNeighbour : rStartPoint.neighbours) {
-			if (pNeighbour->isReady() || pNeighbour->group_number != rStartPoint.group_number)
+			if (pNeighbour->isReady() || pNeighbour->groupNumber != rStartPoint.groupNumber)
 				continue;
 
 			GroupNeighbours(*pNeighbour, rStartPoint.xyz, rFeedbackUpdater);
@@ -542,14 +547,14 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 		// repeate for the neighbours of neighbours recursively
 		for (auto pPoint : neighbours) {
 			for (auto pNeighbour : pPoint->neighbours) {
-				if (pNeighbour->isReady() || pNeighbour->group_number != pPoint->group_number)
+				if (pNeighbour->isReady() || pNeighbour->groupNumber != pPoint->groupNumber)
 					continue;
 
 				GroupHausdorfMixSearch(*pNeighbour, rGroupCounter, rFeedbackUpdater);
 			}
 		}
 	}
-
+	/// Assigns group numbers to the neighbours of given point according to Hausdorf algorithm.
 	void GroupNeighbours(Point& rPoint, Clouds::Point3D baseXYZ, FeedbackUpdater& rFeedbackUpdater) const {
 		const auto xyz = baseXYZ.cast<double>();
 		for (auto pNeighbour : rPoint.neighbours) {
@@ -558,13 +563,12 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 
 			const double distance = Math::CalcPointToPointDistance3D(xyz, pNeighbour->xyz.cast<double>());
 			if (CheckColorGradient(rPoint.color, pNeighbour->color, distance))
-				pNeighbour->group_number = rPoint.group_number;
+				pNeighbour->groupNumber = rPoint.groupNumber;
 		}
-		rPoint.is_calculated = true;
+		rPoint.setCalculated();
 		rFeedbackUpdater.count();
 	}
-	
-	/*Function returns 'true' if the color gradient of given data converted to HSV are within tolerance and 'false' otherwise.*/	
+	/// \return 'true' if the color gradient of given data converted to HSV are within tolerance and 'false' otherwise.
 	bool CheckColorGradient(Clouds::Color color1, Clouds::Color color2, double distance) const {
 		const double R1 = color1.x();
 		const double G1 = color1.y();
@@ -575,12 +579,14 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 
 		const double V1 = std::max({ R1, G1, B1 }) / 255.0;
 		const double S1 = V1 == 0.0 ? 0.0 : 1.0 - std::min({ R1, G1, B1 }) / 255.0 / V1;
-		const double H1 = G1 >= B1 ? 180.0 / PI * acos((R1 - (G1 + B1) / 2.0) / sqrt(R1 * R1 + G1 * G1 + B1 * B1 - R1 * G1 - R1 * B1 - G1 * B1)) :
-			360.0 - 180.0 / PI * acos((R1 - G1 / 2.0 - B1 / 2.0) / sqrt(R1 * R1 + G1 * G1 + B1 * B1 - R1 * G1 - R1 * B1 - G1 * B1));
+		const double H1 = G1 >= B1
+			? 180.0 / PI * acos((R1 - (G1 + B1) / 2.0) / sqrt(R1 * R1 + G1 * G1 + B1 * B1 - R1 * G1 - R1 * B1 - G1 * B1))
+			: 360.0 - 180.0 / PI * acos((R1 - G1 / 2.0 - B1 / 2.0) / sqrt(R1 * R1 + G1 * G1 + B1 * B1 - R1 * G1 - R1 * B1 - G1 * B1));
 		const double V2 = std::max({ R2, G2, B2 }) / 255;
 		const double S2 = V2 == 0.0 ? 0.0 : 1.0 - std::min({ R2, G2, B2 }) / 255.0 / V2;
-		const double H2 = G2 >= B2 ? 180.0 / PI * acos((R2 - (G2 + B2) / 2.0) / sqrt(R2 * R2 + G2 * G2 + B2 * B2 - R2 * G2 - R2 * B2 - G2 * B2)) :
-			360.0 - 180.0 / PI * acos((R2 - G2 / 2.0 - B2 / 2.0) / sqrt(R2 * R2 + G2 * G2 + B2 * B2 - R2 * G2 - R2 * B2 - G2 * B2));
+		const double H2 = G2 >= B2
+			? 180.0 / PI * acos((R2 - (G2 + B2) / 2.0) / sqrt(R2 * R2 + G2 * G2 + B2 * B2 - R2 * G2 - R2 * B2 - G2 * B2))
+			: 360.0 - 180.0 / PI * acos((R2 - G2 / 2.0 - B2 / 2.0) / sqrt(R2 * R2 + G2 * G2 + B2 * B2 - R2 * G2 - R2 * B2 - G2 * B2));
 
 		// calculate gradient of each factor and compare with sum of maximum value set by a user and measurement inaccuracy
 		if (V1 == 0.0 && V2 == 0.0)
@@ -596,36 +602,34 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 			return false;
 		return true;
 	}
-
-	/*Function finds groups with a number of elements less than minimum given by a user and marks them as ungrouped.*/
+	/// Finds groups with a number of elements less than minimum given by a user and marks them as ungrouped.
 	void RemoveTooSmallGroups(Context& rContext, std::vector<Point>& rGraph) const {
 		FeedbackUpdater feedbackUpdater(rContext, 2 * rGraph.size());
 		std::map<int, int> repetitionNumbers;
 		
 		for (const auto& rPoint : rGraph) {
-			++repetitionNumbers[rPoint.group_number];
+			++repetitionNumbers[rPoint.groupNumber];
 			feedbackUpdater.count();
 		}
 		
 		for (auto& rPoint: rGraph) {
-			if (repetitionNumbers[rPoint.group_number] < mMinPointsGroup)
-				rPoint.group_number = 0;
+			if (repetitionNumbers[rPoint.groupNumber] < mMinPointsGroup)
+				rPoint.groupNumber = 0;
 			feedbackUpdater.count();
 		}
 	}
-	
-	/*Function adds ungrouped points surrounded by neighbours assigned to groups to the locally most popular group.*/
+	/// Adds ungrouped points surrounded by neighbours assigned to groups to the locally most popular group.
 	void FillHolesInClusters(Context& rContext, std::vector<Point>& rGraph) const {
 		FeedbackUpdater feedbackUpdater(rContext, rGraph.size());
 
 		// set initial states
 		for (auto& rPoint : rGraph) {
-			if (rPoint.group_number != 0 || rPoint.is_deleted) {
-				rPoint.is_calculated = true;
+			if (!rPoint.isUngrouped()) {
+				rPoint.setCalculated();
 				feedbackUpdater.count();
 			}
 			else
-				rPoint.is_calculated = false;
+				rPoint.setUncalculated();
 		}
 
 		bool anyChange = true;
@@ -634,56 +638,54 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 			std::vector<int> newGroupNumbers;
 			newGroupNumbers.reserve(rGraph.size());
 
-			for (auto& rPoint : rGraph) {
-				if (rPoint.is_calculated) {
-					newGroupNumbers.push_back(0);
-					continue;
-				}
+			std::transform(rGraph.begin(), rGraph.end(), std::back_inserter(newGroupNumbers), [&](Point& rPoint) {
+				if (rPoint.isReady())
+					return 0;
 
 				std::map<int, int> repetitionNumber;
 				for (const auto& pNeighbour : rPoint.neighbours) {
-					if (pNeighbour->group_number != 0)
-						++repetitionNumber[pNeighbour->group_number];
+					if (!pNeighbour->isUngrouped())
+						++repetitionNumber[pNeighbour->groupNumber];
 				}
 
-				auto maxGroup = std::max_element(repetitionNumber.begin(), repetitionNumber.end(), [](auto& a, auto& b) {
-					return a.second < b.second;
+				auto maxGroup = std::max_element(repetitionNumber.begin(), repetitionNumber.end(), [](auto& rA, auto& rB) {
+					return rA.second < rB.second;
 					});
 
-				// assign point to most popular group if it exist
-				if (maxGroup != repetitionNumber.end() && repetitionNumber[0] < mJoinCoefficient * rPoint.neighbours.size()) {
-					newGroupNumbers.push_back(maxGroup->first);
-					rPoint.is_calculated = true;
-					anyChange = true;
-					feedbackUpdater.count();
-				}
-				else
-					newGroupNumbers.push_back(0);
-			}
+				if (maxGroup == repetitionNumber.end())
+					return 0;
 
-			// write values to the structure at the end of each loop to guarantee isotropic addition of points
+				if (repetitionNumber[0] >= mJoinCoefficient * rPoint.neighbours.size())
+					return 0;
+
+				rPoint.setCalculated();
+				feedbackUpdater.count();
+				anyChange = true;
+				return maxGroup->first;
+				});
+
+			// write values to the structure to guarantee isotropic addition of points
 			for (int i = 0; i < rGraph.size(); ++i) {
 				if (newGroupNumbers[i] != 0)
-					rGraph[i].group_number = newGroupNumbers[i];
+					rGraph[i].groupNumber = newGroupNumbers[i];
 			}
 		}
 	}
-
-	/*Function merge clusters with a relatively high number of points on common border.*/
+	/// Merges clusters with a relatively high number of points on common border.
 	void MergeClusters(Context& rContext, std::vector<Point>& rGraph) {
 		typedef std::pair<int, std::vector<Point*>> PointCluster;
 		std::vector<PointCluster> clusters;
 
 		for (auto& rPoint : rGraph) {
-			if (rPoint.group_number == 0)
+			if (rPoint.isUngrouped())
 				continue;
 
 			auto clusterItr = std::find_if(clusters.begin(), clusters.end(), [&rPoint](PointCluster& rCluster) {
-				return rCluster.first == rPoint.group_number;
+				return rCluster.first == rPoint.groupNumber;
 				});
 
 			if (clusterItr == clusters.end())
-				clusters.push_back(PointCluster(rPoint.group_number, std::vector<Point*>({ &rPoint })));
+				clusters.push_back(PointCluster(rPoint.groupNumber, std::vector<Point*>({ &rPoint })));
 			else
 				clusterItr->second.push_back(&rPoint);
 		}
@@ -704,7 +706,7 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 				const int borderPoints = std::count_if(rSmallerCluster.second.begin(), rSmallerCluster.second.end(),
 					[&](Point* pPoint) {
 						return std::any_of(pPoint->neighbours.begin(), pPoint->neighbours.end(), [&](Point* pNeigbour) {
-							return pNeigbour->group_number == rBiggerGroup;
+							return pNeigbour->groupNumber == rBiggerGroup;
 							});
 					});
 
@@ -724,7 +726,7 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 						return;
 
 					for (auto pPoint : rCluster.second)
-						pPoint->group_number = rBiggerGroup;
+						pPoint->groupNumber = rBiggerGroup;
 
 					rCluster.first = rBiggerGroup;
 					});
@@ -735,48 +737,108 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 			feedbackUpdater.count();
 		}
 	}
-	
-	/*Function changes group numbers to subsequent numbers with '0' assigned to ungrouped points and write them to a given vector of layer values.*/
-	void TidyUpGroupNumbers(Context& rContext, std::vector<StoredReal>& rClusterNumbers, std::vector<Point>& rGraph) {
-		FeedbackUpdater feedbackUpdater(rContext, 2 * rGraph.size());
+	/// Changes group numbers to subsequent numbers with '0' assigned to ungrouped points.
+	void TidyUpGroupNumbers(Context& rContext, std::vector<Point>& rGraph) {
+		FeedbackUpdater feedbackUpdater(rContext, 4 * rGraph.size());
 
-		std::map<int, int> repetitionNumbers;
+		std::set<int> groupNumbers;
 		for (auto& rPoint : rGraph) {
-			if (rPoint.group_number != 0)
-				++repetitionNumbers[rPoint.group_number];
+			groupNumbers.insert(rPoint.groupNumber);
 			feedbackUpdater.count();
 		}
 
-		std::vector<std::pair<const int, int>*> orderedGroups;
-		for (auto& rGroupSize : repetitionNumbers)
-			orderedGroups.push_back(&rGroupSize);
-
-		std::sort(orderedGroups.begin(), orderedGroups.end(), [](std::pair<const int, int>*& a, std::pair<const int, int>*& b) {
-			return a->second > b->second;
-			});
-
 		std::map<int, int> newGroupNumbers;
-		for (int j = 0; j < orderedGroups.size(); ++j) {
-			// ignore number '0' assigned to ungrouped points
-			newGroupNumbers[orderedGroups[j]->first] = j + 1;
+		int groupCounter = 0;
+		for (const int& rNumber : groupNumbers) 
+			newGroupNumbers[rNumber] = groupCounter++;
+
+		for (auto& rPoint : rGraph) {
+			rPoint.groupNumber = newGroupNumbers[rPoint.groupNumber];
+			feedbackUpdater.count();
+		}
+
+		struct GroupNode {
+			int number;
+			std::vector<GroupNode*> neighbours;
+			GroupNode(int number) : number(number) {}
+		};
+
+		std::map<int, std::set<int>> neighbourGroups;
+		for (auto& rPoint : rGraph) {
+			for (auto* pNeighbour : rPoint.neighbours)
+				neighbourGroups[rPoint.groupNumber].insert(pNeighbour->groupNumber);
+
+			feedbackUpdater.count();
+		}
+
+		std::vector<GroupNode> groupGraph;
+		for (int i = 0; i < groupCounter; ++i)
+			groupGraph.push_back(GroupNode(i));
+
+		for (auto& rPair : neighbourGroups) {
+			for (auto& rNeighbourNumber : rPair.second) {
+				// ignore number '0' assigned to ungrouped points
+				if (rPair.first != rNeighbourNumber && rNeighbourNumber != 0)
+					groupGraph[rPair.first].neighbours.push_back(&groupGraph[rNeighbourNumber]);
+			}
+		}
+
+		const auto& calculateGroupMatchQuality = [](std::vector<GroupNode>& rGroupGraph) -> int {
+			return std::accumulate(rGroupGraph.begin() + 1, rGroupGraph.end(), 0, [](int init, GroupNode& rNode) {
+				const auto& rNeighbours = rNode.neighbours;
+				return init + std::accumulate(rNeighbours.begin(), rNeighbours.end(), 0, [&](int init, GroupNode* pNeighbour) {
+					return init + std::abs(pNeighbour->number - rNode.number);
+					});
+				});
+			};
+
+		bool anyChange = true;
+		while (anyChange) {
+			anyChange = false;
+			for (int i = 1; i < groupGraph.size(); ++i) {
+				for (int j = i + 1; j < groupGraph.size(); ++j) {
+					const int matchQualityBefore = calculateGroupMatchQuality(groupGraph);
+					std::swap(groupGraph[i].number, groupGraph[j].number);
+					const int matchQualityAfter = calculateGroupMatchQuality(groupGraph);
+
+					if (matchQualityBefore >= matchQualityAfter)
+						std::swap(groupGraph[i].number, groupGraph[j].number);
+					else
+						anyChange = true;
+				}
+			}
 		}
 
 		for (auto& rPoint : rGraph) {
-			rPoint.group_number = newGroupNumbers[rPoint.group_number];
-			rClusterNumbers.push_back(rPoint.group_number);
+			rPoint.groupNumber = groupGraph[rPoint.groupNumber].number;
 			feedbackUpdater.count();
 		}
 	}
+	/// Creates new layer and writes as values the group numbers of all points.
+	void CreateGroupNumbersLayer(Clouds::ICloud* pCloud, Clouds::PointsRange& range, std::vector<Point>& rGraph) {
+		const String layerName = L"Segmentation";
+		auto layers = pCloud->FindLayers(layerName);
+		auto* pSegmentsLayer = layers.empty() ? pCloud->CreateLayer(layerName, 0.0) : layers[0];
+		std::vector<StoredReal> segmentNumbers;
 
-	/*Function finds the best fitting cluster to the loudspeaker and write to the given layer '1.0' for points of this cluster and '0.0' for others.*/
+		segmentNumbers.reserve(rGraph.size());
+		for (auto& rPoint : rGraph)
+			segmentNumbers.push_back(rPoint.groupNumber);
+
+		range.SetLayerVals(segmentNumbers, *pSegmentsLayer);
+	}
+	/**
+	* Finds the best fitting cluster to the loudspeaker and write to the given layer '1.0' for points of this cluster
+	* and '0.0' for others.\*
+	*/
 	void FindTheSpeaker(Context& rContext, std::vector<StoredReal>& rIsSpeaker, std::vector<Point>& rGraph) {
 		std::map<int, std::vector<Point*>> clusters;
 
 		for (auto& rPoint : rGraph) {
-			if (clusters.find(rPoint.group_number) == clusters.end())
-				clusters[rPoint.group_number] = { &rPoint };
+			if (clusters.find(rPoint.groupNumber) == clusters.end())
+				clusters[rPoint.groupNumber] = { &rPoint };
 			else
-				clusters[rPoint.group_number].push_back(&rPoint);
+				clusters[rPoint.groupNumber].push_back(&rPoint);
 		}
 
 		FeedbackUpdater feedbackUpdater(rContext, clusters.size(), true);
@@ -793,14 +855,16 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 			});
 
 		for (auto& rPoint : rGraph)
-			rIsSpeaker.push_back(rPoint.group_number == speakerItr->first ? 1.0 : 0.0);
+			rIsSpeaker.push_back(rPoint.groupNumber == speakerItr->first ? 1.0 : 0.0);
 
 		//// print the values of all fitting errors
 		//for (auto& rError : fittingErrors)
 		//	OGX_LINE.Msg(Info, std::to_wstring(rError.first) + L". " + std::to_wstring(rError.second));
 	}
-
-	/*Function calculates a box fitted to the borders of given points cluster. Returns sum of angles and dimensions relative errors and relative RMSE for this fitting.*/
+	/**
+	* Calculates a box fitted to the borders of given points cluster.
+	* \return Sum of angles and dimensions relative errors and relative RMSE for this fitting.
+	*/
 	double GetBoxFittingError(Context& rContext, const std::vector<Point*>& rCluster) {
 		Math::Point3D firstDiagonalEnd, secondDiagonalEnd;
 		double maxDistanceBetweenPoints = 0.0;
@@ -862,8 +926,10 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 		const bool isFarSecPlane001 = Math::CalcPointToPointDistance3D(farthestFromSectionPlane, vertex000)
 			< Math::CalcPointToPointDistance3D(farthestFromSectionPlane, vertex011);
 
-		const Math::Point3D vertex001 = isFarSecPlane001 ? farthestFromSectionPlane : vertex000 + vertex011 - farthestFromSectionPlane;
-		const Math::Point3D vertex010 = isFarSecPlane001 ? vertex000 + vertex011 - farthestFromSectionPlane : farthestFromSectionPlane;
+		const Math::Point3D vertex001 = isFarSecPlane001
+			? farthestFromSectionPlane : vertex000 + vertex011 - farthestFromSectionPlane;
+		const Math::Point3D vertex010 = isFarSecPlane001
+			? vertex000 + vertex011 - farthestFromSectionPlane : farthestFromSectionPlane;
 	
 		const Math::Point3D vertex101 = 2 * centerPoint - vertex010;
 		const Math::Point3D vertex110 = 2 * centerPoint - vertex001;
