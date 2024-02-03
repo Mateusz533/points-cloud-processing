@@ -10,6 +10,8 @@ Object to find: 'glosnik'
 #include <ogx/Plugins/EasyPlugin.h>
 #include <ogx/Data/Clouds/CloudHelpers.h>
 #include <random>
+#include <queue>
+#include <stack>
 
 using namespace ogx;
 using namespace Data;
@@ -66,13 +68,18 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 		{}
 
 		void count() {
-			const double last_ratio = 1.0 * mCounter++ / mStepNumber;
+			update(1);
+		}
+		void update(int numberOfCounts) {
+			const double last_ratio = 1.0 * mCounter / mStepNumber;
+			mCounter += numberOfCounts;
 			const double ratio = 1.0 * mCounter / mStepNumber;
 			const double percentage = mDecreasingGrowth ? 100 * (1.0 - pow(1.0 - ratio, 10.0)) : 100 * ratio;
-			const double last_percentage = mDecreasingGrowth ? 100 * (1.0 - pow(1.0 - last_ratio, 10.0)): 100 * last_ratio;
+			const double last_percentage = mDecreasingGrowth ? 100 * (1.0 - pow(1.0 - last_ratio, 10.0)) : 100 * last_ratio;
 			if (floor(percentage) > floor(last_percentage))
-				mContext.Feedback().Update(0.01 * percentage);
+				mContext.Feedback().Update(0.01 * percentage);			
 		}
+
 	private:
 		Context& mContext;
 		unsigned int mCounter = 0;
@@ -326,37 +333,103 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 			[](Clouds::Point3D& rXYZ, Clouds::Color& rColor) {
 				return Point(rXYZ, rColor);
 			});
+		
+		using Cluster = std::vector<Point*>;
+		using CubeVector = std::vector<std::vector<std::vector<Cluster>>>;
+		class Dimention {
+		public:
+			Dimention() = delete;
+			Dimention(std::vector<Point>& rGraph, double maxDistance, std::function<double(Point&)> dimentionGetter) :
+				getDimention(dimentionGetter),
+				offset(calculateOffset(rGraph)),
+				length(calculateDimention(rGraph)),
+				divisions(length / maxDistance),
+				indexShifts(calculateIndexShifts(rGraph, maxDistance))
+			{}
+			int calculateIndex(Point& rPoint) const {
+				return std::min(static_cast<int>((getDimention(rPoint) - offset) / length * divisions), divisions - 1);
+			}
+			void forEachNeighbour(std::function<void(int, int)> fun) {
+				for (int baseInd = 0; baseInd < divisions; ++baseInd) {
+					for (const int& shift : indexShifts) {
+						const int neighbourInd = baseInd + shift;
+						if (neighbourInd < 0 || neighbourInd >= divisions)
+							break;
 
-		std::vector<Point*> ptrsSortedByX;
-		ptrsSortedByX.reserve(rangeSize);
-		std::transform(rGraph.begin(), rGraph.end(), std::back_inserter(ptrsSortedByX), [](Point& rPoint) {
-			return &rPoint;
-			});
-		std::sort(ptrsSortedByX.begin(), ptrsSortedByX.end(), [](Point* pA, Point* pB) {
-			return pA->xyz.x() < pB->xyz.x();
-			});
-
-		FeedbackUpdater feedbackUpdater(rContext, rangeSize);
-		for (auto itr = ptrsSortedByX.begin(), end = ptrsSortedByX.end(); itr != end; ++itr) {
-			const auto& rBasePointPtr = *itr;
-			const auto basePointXYZ = rBasePointPtr->xyz.cast<double>();
-			const float xMax = maxDistance + rBasePointPtr->xyz.x();
-
-			for (auto neighbourItr = itr + 1; neighbourItr != end; ++neighbourItr) {
-				const auto& rNeighbourPtr = *neighbourItr;
-				if (rNeighbourPtr->xyz.x() > xMax)
-					break;
-
-				if (Math::CalcPointToPointDistance3D(basePointXYZ, rNeighbourPtr->xyz.cast<double>()) <= maxDistance) {
-					rBasePointPtr->neighbours.push_back(rNeighbourPtr);
-					rNeighbourPtr->neighbours.push_back(rBasePointPtr);
+						fun(baseInd, neighbourInd);
+					}
 				}
 			}
+			size_t size() const {
+				return divisions;
+			}
 
-			const auto& rBasePointXYZ = rBasePointPtr->xyz.cast<double>();
-			std::sort(rBasePointPtr->neighbours.begin(), rBasePointPtr->neighbours.end(), [&](Point* pA, Point* pB) {
-				return Math::CalcPointToPointDistance3D(pA->xyz.cast<double>(), rBasePointXYZ)
-					< Math::CalcPointToPointDistance3D(pB->xyz.cast<double>(), rBasePointXYZ);
+		private:
+			double calculateOffset(std::vector<Point>& rGraph) const {
+				return getDimention(*std::min_element(rGraph.begin(), rGraph.end(), [&](Point& left, Point& right) {
+					return getDimention(left) < getDimention(right);
+					}));
+			}
+			double calculateDimention(std::vector<Point>& rGraph) const {
+				return getDimention(*std::max_element(rGraph.begin(), rGraph.end(), [&](Point& left, Point& right) {
+					return getDimention(left) < getDimention(right);
+					})) - offset;
+			}
+			std::vector<int> calculateIndexShifts(std::vector<Point>& rGraph, double maxDistance) const {
+				std::vector<int> shifts({ 0 });
+				for (int i = 1; (i - 1) * length / divisions < maxDistance; ++i) {
+					shifts.push_back(i);
+					shifts.push_back(-i);
+				}
+				return shifts;
+			}
+			const std::function<double(Point&)> getDimention;
+			const double offset;
+			const double length;
+			const int divisions;
+			const std::vector<int> indexShifts;
+		};
+
+		Dimention x(rGraph, maxDistance, [](Point& rPoint)->double {return rPoint.xyz.x(); });
+		Dimention y(rGraph, maxDistance, [](Point& rPoint)->double {return rPoint.xyz.y(); });
+		Dimention z(rGraph, maxDistance, [](Point& rPoint)->double {return rPoint.xyz.z(); });
+
+		CubeVector clusters(x.size(), std::vector<std::vector<Cluster>>(y.size(), std::vector<Cluster>(z.size())));
+
+		for (auto& rPoint : rGraph) {
+			const int indX = x.calculateIndex(rPoint);
+			const int indY = y.calculateIndex(rPoint);
+			const int indZ = z.calculateIndex(rPoint);
+			auto& cluster = clusters[indX][indY][indZ];
+			cluster.push_back(&rPoint);
+		}
+		
+		FeedbackUpdater feedbackUpdater(rContext, 2 * rangeSize);
+
+		x.forEachNeighbour([&](int baseX, int neighbourX) {
+			y.forEachNeighbour([&](int baseY, int neighbourY) {
+				z.forEachNeighbour([&](int baseZ, int neighbourZ) {
+					for (auto* pPoint : clusters[baseX][baseY][baseZ]) {
+						const auto& first = pPoint->xyz.cast<double>();
+
+						for (auto* pNeighbour : clusters[neighbourX][neighbourY][neighbourZ]) {
+							const auto& second = pNeighbour->xyz.cast<double>();
+
+							if (pPoint == pNeighbour)
+								feedbackUpdater.count();
+							else if (Math::CalcPointToPointDistance3D(first, second) <= maxDistance)
+								pPoint->neighbours.push_back(pNeighbour);
+						}
+					}
+					});
+				});
+			});
+
+		for (auto& rPoint : rGraph) {
+			const auto rPointXYZ = rPoint.xyz.cast<double>();
+			std::sort(rPoint.neighbours.begin(), rPoint.neighbours.end(), [&](Point* pA, Point* pB) {
+				return Math::CalcPointToPointDistance3D(pA->xyz.cast<double>(), rPointXYZ)
+					< Math::CalcPointToPointDistance3D(pB->xyz.cast<double>(), rPointXYZ);
 				});
 			feedbackUpdater.count();
 		}
@@ -380,7 +453,7 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 	*/
 	void RemoveNoise(Context& rContext, std::vector<Point>& rGraph, int minNeighbours, int neighboursToSmooth) {
 		const int numberOfPoints = rGraph.size();
-		FeedbackUpdater feedbackUpdater(rContext, numberOfPoints);
+		FeedbackUpdater feedbackUpdater(rContext, numberOfPoints * 2);
 		for (auto& rPoint : rGraph) {
 			if (rPoint.neighbours.size() < minNeighbours)
 				rPoint.setDeleted();
@@ -430,6 +503,7 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 				return Math::CalcPointToPointDistance3D(a->xyz.cast<double>(), rPoint.xyz.cast<double>())
 					< Math::CalcPointToPointDistance3D(b->xyz.cast<double>(), rPoint.xyz.cast<double>());
 				});
+			feedbackUpdater.count();
 		}
 	}
 	/// Filters all points using the median colors of neighbours.
@@ -445,7 +519,7 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 				return rPoint.color;
 			}
 
-			typedef std::pair<double, double> WeightedColor;
+			using WeightedColor = std::pair<double, double>;
 			std::vector<WeightedColor> red, green, blue;
 			const auto begin = rPoint.neighbours.begin();
 			const auto pointXYZ = rPoint.xyz.cast<double>();
@@ -483,8 +557,8 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 			rGraph[i].color = colors[i];
 	}
 	/**
-	* Groups the points into clusters choosing one of the implemented recursive Hausdorf algorithm depending on the
-	* number of points.\*
+	* Groups the points into clusters choosing one of the implemented Hausdorf algorithm depending on the number
+	* of points.\*
 	*/
 	void GroupHausdorf(Context& rContext, std::vector<Point>& rGraph, const double hausdorfThreshold) {
 		// set initial values
@@ -509,20 +583,43 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 		}
 	}
 	/**
-	* Groups points into a cluster with given number, starting from a given point using recursive Hausdorf's algorithm
-	* adapted to the graph structure of data. It should not be used for large clouds due to stack overflow.\*
+	* Groups points into a cluster with given number using Hausdorf's algorithm, starting from a given point with depth
+	* first searching of the graph data structure.\*
 	*/
 	void GroupHausdorfDFS(Point& rStartPoint, const int& rGroupCounter, FeedbackUpdater& rFeedbackUpdater) {
-		// relize the algorithm for the point
+		std::stack<Point*> neighbours({ &rStartPoint });
 		rStartPoint.groupNumber = rGroupCounter;
-		GroupNeighbours(rStartPoint, rStartPoint.xyz, rFeedbackUpdater);
 
-		// repeate for the neighbours recursively
-		for (auto pNeighbour : rStartPoint.neighbours) {
-			if (pNeighbour->isReady() || pNeighbour->groupNumber != rStartPoint.groupNumber)
+		while (!neighbours.empty()) {
+			Point* pBasePoint = neighbours.top();
+			neighbours.pop();
+			if (pBasePoint->isReady() || pBasePoint->groupNumber != rGroupCounter)
 				continue;
 
-			GroupHausdorfDFS(*pNeighbour, rGroupCounter, rFeedbackUpdater);
+			for (auto pNeighbour : pBasePoint->neighbours)
+				neighbours.push(pNeighbour);
+
+			GroupNeighbours(pBasePoint, pBasePoint->xyz, rFeedbackUpdater);
+		}
+	}
+	/**
+	* Groups points into a cluster with given number using Hausdorf's algorithm, starting from a given point with
+	* breadth first searching of the graph data structure.\*
+	*/
+	void GroupHausdorfBFS(Point& rStartPoint, const int& rGroupCounter, FeedbackUpdater& rFeedbackUpdater) {
+		std::queue<Point*> neighbours({ &rStartPoint });
+		rStartPoint.groupNumber = rGroupCounter;
+
+		while (!neighbours.empty()) {
+			Point* pBasePoint = neighbours.front();
+			neighbours.pop();
+			if (pBasePoint->isReady() || pBasePoint->groupNumber != rGroupCounter)
+				continue;
+
+			for (auto pNeighbour : pBasePoint->neighbours)
+				neighbours.push(pNeighbour);
+
+			GroupNeighbours(pBasePoint, pBasePoint->xyz, rFeedbackUpdater);
 		}
 	}
 	/**
@@ -532,7 +629,7 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 	void GroupHausdorfMixSearch(Point& rStartPoint, const int& rGroupCounter, FeedbackUpdater& rFeedbackUpdater) {
 		// relize the algorithm for the point
 		rStartPoint.groupNumber = rGroupCounter;
-		GroupNeighbours(rStartPoint, rStartPoint.xyz, rFeedbackUpdater);
+		GroupNeighbours(&rStartPoint, rStartPoint.xyz, rFeedbackUpdater);
 
 		// repeate for the neighbours in a loop
 		std::vector<Point*> neighbours;
@@ -540,7 +637,7 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 			if (pNeighbour->isReady() || pNeighbour->groupNumber != rStartPoint.groupNumber)
 				continue;
 
-			GroupNeighbours(*pNeighbour, rStartPoint.xyz, rFeedbackUpdater);
+			GroupNeighbours(pNeighbour, rStartPoint.xyz, rFeedbackUpdater);
 			neighbours.push_back(pNeighbour);
 		}
 
@@ -555,38 +652,34 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 		}
 	}
 	/// Assigns group numbers to the neighbours of given point according to Hausdorf algorithm.
-	void GroupNeighbours(Point& rPoint, Clouds::Point3D baseXYZ, FeedbackUpdater& rFeedbackUpdater) const {
+	void GroupNeighbours(Point* pPoint, Clouds::Point3D baseXYZ, FeedbackUpdater& rFeedbackUpdater) const {
 		const auto xyz = baseXYZ.cast<double>();
-		for (auto pNeighbour : rPoint.neighbours) {
+		for (auto pNeighbour : pPoint->neighbours) {
 			if (pNeighbour->isReady())
 				continue;
 
 			const double distance = Math::CalcPointToPointDistance3D(xyz, pNeighbour->xyz.cast<double>());
-			if (CheckColorGradient(rPoint.color, pNeighbour->color, distance))
-				pNeighbour->groupNumber = rPoint.groupNumber;
+			if (CheckColorGradient(pPoint->color, pNeighbour->color, distance))
+				pNeighbour->groupNumber = pPoint->groupNumber;
 		}
-		rPoint.setCalculated();
+		pPoint->setCalculated();
 		rFeedbackUpdater.count();
 	}
 	/// \return 'true' if the color gradient of given data converted to HSV are within tolerance and 'false' otherwise.
 	bool CheckColorGradient(Clouds::Color color1, Clouds::Color color2, double distance) const {
-		const double R1 = color1.x();
-		const double G1 = color1.y();
-		const double B1 = color1.z();
-		const double R2 = color2.x();
-		const double G2 = color2.y();
-		const double B2 = color2.z();
+		auto rgb2hsv = [](const Clouds::Color& color, double& rHue, double& rSaturation, double& rValue) {
+			const double R = color.x();
+			const double G = color.y();
+			const double B = color.z();
+			rValue = std::max({ R, G, B }) / 255.0;
+			rSaturation = rValue == 0.0 ? 0.0 : 1.0 - std::min({ R, G, B }) / 255.0 / rValue;
+			double aux = 180.0 / PI * acos((R - (G + B) / 2.0) / sqrt(R * R + G * G + B * B - R * G - R * B - G * B));
+			rHue = G >= B ? aux : 360.0 - aux;
+			};
 
-		const double V1 = std::max({ R1, G1, B1 }) / 255.0;
-		const double S1 = V1 == 0.0 ? 0.0 : 1.0 - std::min({ R1, G1, B1 }) / 255.0 / V1;
-		const double H1 = G1 >= B1
-			? 180.0 / PI * acos((R1 - (G1 + B1) / 2.0) / sqrt(R1 * R1 + G1 * G1 + B1 * B1 - R1 * G1 - R1 * B1 - G1 * B1))
-			: 360.0 - 180.0 / PI * acos((R1 - G1 / 2.0 - B1 / 2.0) / sqrt(R1 * R1 + G1 * G1 + B1 * B1 - R1 * G1 - R1 * B1 - G1 * B1));
-		const double V2 = std::max({ R2, G2, B2 }) / 255;
-		const double S2 = V2 == 0.0 ? 0.0 : 1.0 - std::min({ R2, G2, B2 }) / 255.0 / V2;
-		const double H2 = G2 >= B2
-			? 180.0 / PI * acos((R2 - (G2 + B2) / 2.0) / sqrt(R2 * R2 + G2 * G2 + B2 * B2 - R2 * G2 - R2 * B2 - G2 * B2))
-			: 360.0 - 180.0 / PI * acos((R2 - G2 / 2.0 - B2 / 2.0) / sqrt(R2 * R2 + G2 * G2 + B2 * B2 - R2 * G2 - R2 * B2 - G2 * B2));
+		double V1, S1, H1, V2, S2, H2;
+		rgb2hsv(color1, H1, S1, V1);
+		rgb2hsv(color2, H2, S2, V2);
 
 		// calculate gradient of each factor and compare with sum of maximum value set by a user and measurement inaccuracy
 		if (V1 == 0.0 && V2 == 0.0)
@@ -673,7 +766,7 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 	}
 	/// Merges clusters with a relatively high number of points on common border.
 	void MergeClusters(Context& rContext, std::vector<Point>& rGraph) {
-		typedef std::pair<int, std::vector<Point*>> PointCluster;
+		using PointCluster = std::pair<int, std::vector<Point*>>;
 		std::vector<PointCluster> clusters;
 
 		for (auto& rPoint : rGraph) {
@@ -841,13 +934,15 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 				clusters[rPoint.groupNumber].push_back(&rPoint);
 		}
 
-		FeedbackUpdater feedbackUpdater(rContext, clusters.size(), true);
+		FeedbackUpdater feedbackUpdater(rContext, rGraph.size());
 
 		std::map<int, double> fittingErrors;
 		for (auto& rCluster : clusters) {
 			// ignore ungrouped points
-			fittingErrors[rCluster.first] = GetBoxFittingError(rContext, rCluster.second);
-			feedbackUpdater.count();
+			if (rCluster.first != 0)
+				fittingErrors[rCluster.first] = CalculateBoxFittingError(rCluster.second);
+
+			feedbackUpdater.update(rCluster.second.size());
 		}
 
 		auto speakerItr = std::min_element(fittingErrors.begin(), fittingErrors.end(), [](auto& rLeft, auto& rRight) {
@@ -865,100 +960,48 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 	* Calculates a box fitted to the borders of given points cluster.
 	* \return Sum of angles and dimensions relative errors and relative RMSE for this fitting.
 	*/
-	double GetBoxFittingError(Context& rContext, const std::vector<Point*>& rCluster) {
-		Math::Point3D firstDiagonalEnd, secondDiagonalEnd;
-		double maxDistanceBetweenPoints = 0.0;
-		for (int i = 0; i < rCluster.size(); ++i) {
-			const auto& rFirstPoint = rCluster[i]->xyz.cast<double>();
+	double CalculateBoxFittingError(const std::vector<Point*>& rCluster) {
+		const auto maxDiagonalEnds = CalculateMaxDiagonalEnds(rCluster);
+		const Math::Point3D centerPoint = (maxDiagonalEnds.first + maxDiagonalEnds.second) / 2;
 
-			for (int j = i + 1; j < rCluster.size(); ++j) {
-				const auto& rSecondPoint = rCluster[j]->xyz.cast<double>();
-				const double localDistance = Math::CalcPointToPointDistance3D(rFirstPoint, rSecondPoint);
+		const Math::Line3D longestDiagonal = Math::CalcLine3D(maxDiagonalEnds.first, maxDiagonalEnds.second);
+		const Math::Point3D farthestFromDiagonal = CalculateFarthestPointFromLine(rCluster, longestDiagonal);
 
-				if (localDistance > maxDistanceBetweenPoints) {
-					maxDistanceBetweenPoints = localDistance;
-					firstDiagonalEnd = rFirstPoint;
-					secondDiagonalEnd = rSecondPoint;
-				}
-			}
-		}
-		const Math::Point3D centerPoint = (firstDiagonalEnd + secondDiagonalEnd) / 2;
-		const Math::Line3D longestDiagonal = Math::CalcLine3D(firstDiagonalEnd, secondDiagonalEnd);
-		
-		Math::Point3D farthestFromDiagonal;
-		double maxDistanceFromDiagonal = 0.0;
-		for (const auto pPoint : rCluster) {
-			const auto& rPoint = pPoint->xyz.cast<double>();
-			const double localDistance = Math::CalcPointToLineDistance3D(rPoint, longestDiagonal);
+		auto sectionPlane = Math::CalcPlane3D(maxDiagonalEnds.first, maxDiagonalEnds.second, farthestFromDiagonal);
+		auto farthestSectionPlaneCorner = CalculateFarthestPointFromPlaneAndPoint(rCluster, sectionPlane, centerPoint);
 
-			if (localDistance > maxDistanceFromDiagonal) {
-				maxDistanceFromDiagonal = localDistance;
-				farthestFromDiagonal = rPoint;
-			}
-		}
-		const Math::Plane3D sectionPlane = Math::CalcPlane3D(firstDiagonalEnd, secondDiagonalEnd, farthestFromDiagonal);
-		
-		Math::Point3D farthestFromSectionPlane;
-		double maxDistanceFromSectionPlaneAndCenter = 0.0;
-		for (const auto pPoint : rCluster) {
-			const auto& rPoint = pPoint->xyz.cast<double>();
-			double localDistance = Math::CalcPointToPlaneDistance3D(rPoint, sectionPlane);
-			localDistance += Math::CalcPointToPointDistance3D(rPoint, centerPoint);
-
-			if (localDistance > maxDistanceFromSectionPlaneAndCenter) {
-				maxDistanceFromSectionPlaneAndCenter = localDistance;
-				farthestFromSectionPlane = rPoint;
-			}
-		}
-
-		const bool isFirstEndOn0YZ = Math::CalcPointToPointDistance3D(firstDiagonalEnd, farthestFromSectionPlane)
-			< Math::CalcPointToPointDistance3D(secondDiagonalEnd, farthestFromSectionPlane);
-
-		const Math::Point3D& vertex000 = isFirstEndOn0YZ ? firstDiagonalEnd : secondDiagonalEnd;
-		const Math::Point3D& vertex111 = isFirstEndOn0YZ ? secondDiagonalEnd : firstDiagonalEnd;
-
-		const bool isFarDiagOn0YZ = Math::CalcPointToPointDistance3D(farthestFromDiagonal, farthestFromSectionPlane)
-			< Math::CalcPointToPointDistance3D(farthestFromDiagonal, vertex000);
-
-		const Math::Point3D vertex011 = isFarDiagOn0YZ ? farthestFromDiagonal : 2 * centerPoint - farthestFromDiagonal;
-		const Math::Point3D vertex100 = isFarDiagOn0YZ ? 2 * centerPoint - farthestFromDiagonal : farthestFromDiagonal;
-		
-		const bool isFarSecPlane001 = Math::CalcPointToPointDistance3D(farthestFromSectionPlane, vertex000)
-			< Math::CalcPointToPointDistance3D(farthestFromSectionPlane, vertex011);
-
-		const Math::Point3D vertex001 = isFarSecPlane001
-			? farthestFromSectionPlane : vertex000 + vertex011 - farthestFromSectionPlane;
-		const Math::Point3D vertex010 = isFarSecPlane001
-			? vertex000 + vertex011 - farthestFromSectionPlane : farthestFromSectionPlane;
-	
-		const Math::Point3D vertex101 = 2 * centerPoint - vertex010;
-		const Math::Point3D vertex110 = 2 * centerPoint - vertex001;
-
-		const Math::Plane3D wall0YZ = Math::CalcPlane3D(vertex000, vertex010, vertex001);
-		const Math::Plane3D wall1YZ = Math::CalcPlane3D(vertex111, vertex110, vertex101);
-		const Math::Plane3D wallX0Z = Math::CalcPlane3D(vertex000, vertex001, vertex100);
-		const Math::Plane3D wallX1Z = Math::CalcPlane3D(vertex111, vertex011, vertex110);
-		const Math::Plane3D wallXY0 = Math::CalcPlane3D(vertex000, vertex010, vertex100);
-		const Math::Plane3D wallXY1 = Math::CalcPlane3D(vertex111, vertex011, vertex101);
-		
-		const double boxFittingSquareError = std::accumulate(rCluster.begin(), rCluster.end(), 0.0,
-			[&](double init, Point* pPoint) {
-				const auto& rPoint = pPoint->xyz.cast<double>();
-				const auto minPointWallDistance = std::min({
-					Math::CalcPointToPlaneDistance3D(rPoint, wall0YZ),
-					Math::CalcPointToPlaneDistance3D(rPoint, wall1YZ),
-					Math::CalcPointToPlaneDistance3D(rPoint, wallX0Z),
-					Math::CalcPointToPlaneDistance3D(rPoint, wallX1Z),
-					Math::CalcPointToPlaneDistance3D(rPoint, wallXY0),
-					Math::CalcPointToPlaneDistance3D(rPoint, wallXY1)
-					});
-				return init + pow(minPointWallDistance, 2);
+		std::vector<Math::Point3D> mainVertecies({
+			maxDiagonalEnds.first,
+			maxDiagonalEnds.second,
+			farthestFromDiagonal,
+			2 * centerPoint - farthestFromDiagonal
 			});
-		const double rmse = sqrt(boxFittingSquareError / rCluster.size());
+		std::sort(mainVertecies.begin(), mainVertecies.end(), [&](Math::Point3D& left, Math::Point3D& right) {
+			return Math::CalcPointToPointDistance3D(left, farthestSectionPlaneCorner)
+				< Math::CalcPointToPointDistance3D(right, farthestSectionPlaneCorner);
+			});
+
+		const Math::Point3D& vertex000 = farthestSectionPlaneCorner;
+		const Math::Point3D& vertex001 = mainVertecies[0];
+		const Math::Point3D& vertex010 = mainVertecies[1];
+		const Math::Point3D& vertex101 = mainVertecies[2];
+		const Math::Point3D& vertex110 = mainVertecies[3];
+		const Math::Point3D vertex111 = 2 * centerPoint - vertex000;
+
+		const std::vector<Math::Plane3D> walls({
+			Math::CalcPlane3D(vertex000, vertex010, vertex001),
+			Math::CalcPlane3D(vertex111, vertex110, vertex101),
+			Math::CalcPlane3D(vertex000, vertex001, vertex101),
+			Math::CalcPlane3D(vertex111, vertex010, vertex110),
+			Math::CalcPlane3D(vertex000, vertex010, vertex110),
+			Math::CalcPlane3D(vertex111, vertex001, vertex101),
+			});
+
+		const double rmse = CalculateWallsFittingRMSE(rCluster, walls);
 		const double maxDistance = Math::CalcPointToLineDistance3D(farthestFromDiagonal, longestDiagonal);
 
 		double relativeAngleError = 0.0;
-		const Math::Vector3D xVec(vertex100 - vertex000);
+		const Math::Vector3D xVec(vertex110 - vertex010);
 		const Math::Vector3D yVec(vertex010 - vertex000);
 		const Math::Vector3D zVec(vertex001 - vertex000);
 		relativeAngleError += abs(Math::CalcAngleBetweenTwoVectors(xVec, yVec) - PI / 2) / (PI / 2);
@@ -977,6 +1020,126 @@ struct LoudspeakerSearching : public Plugin::EasyMethod {
 		//	+ std::to_wstring(rmse / maxDistance));
 		
 		return combinedRelativeError;
+	}
+
+	std::pair<Math::Point3D, Math::Point3D> CalculateMaxDiagonalEnds(const std::vector<Point*>& rCluster) {
+		const auto xMinMax = std::minmax_element(rCluster.begin(), rCluster.end(), [](Point* pLeft, Point* pRight) {
+			return pLeft->xyz.x() < pRight->xyz.x();
+			});
+		const auto yMinMax = std::minmax_element(rCluster.begin(), rCluster.end(), [](Point* pLeft, Point* pRight) {
+			return pLeft->xyz.y() < pRight->xyz.y();
+			});
+		const auto zMinMax = std::minmax_element(rCluster.begin(), rCluster.end(), [](Point* pLeft, Point* pRight) {
+			return pLeft->xyz.z() < pRight->xyz.z();
+			});
+
+		std::vector<Point*> borderPoints = {
+			*xMinMax.first, *xMinMax.second, *yMinMax.first, *yMinMax.second, *zMinMax.first, *zMinMax.second
+		};
+
+		Math::Point3D scopeCenter = Math::Point3D(
+			((*xMinMax.first)->xyz.x() + (*xMinMax.second)->xyz.x()) / 2,
+			((*yMinMax.first)->xyz.y() + (*yMinMax.second)->xyz.y()) / 2,
+			((*zMinMax.first)->xyz.z() + (*zMinMax.second)->xyz.z()) / 2
+		);
+
+		auto& rFarthestToCenter = **std::max_element(rCluster.begin(), rCluster.end(), [&](Point* pA, Point* pB) {
+			return Math::CalcPointToPointDistance3D(pA->xyz.cast<double>(), scopeCenter)
+				< Math::CalcPointToPointDistance3D(pB->xyz.cast<double>(), scopeCenter);
+			});
+		auto maxDistanceToCenter = Math::CalcPointToPointDistance3D(rFarthestToCenter.xyz.cast<double>(), scopeCenter);
+
+		Math::Point3D firstDiagonalEnd, secondDiagonalEnd;
+		double maxDistanceBetweenPoints = 0.0;
+		for (int i = 0; i < borderPoints.size(); ++i) {
+			const auto& rFirstPoint = borderPoints[i]->xyz.cast<double>();
+
+			for (int j = i + 1; j < borderPoints.size(); ++j) {
+				const auto& rSecondPoint = borderPoints[j]->xyz.cast<double>();
+				const double localDistance = Math::CalcPointToPointDistance3D(rFirstPoint, rSecondPoint);
+
+				if (localDistance > maxDistanceBetweenPoints) {
+					maxDistanceBetweenPoints = localDistance;
+					firstDiagonalEnd = rFirstPoint;
+					secondDiagonalEnd = rSecondPoint;
+				}
+			}
+		}
+
+		std::vector<Point*> outsideSphere;
+		outsideSphere.reserve(rCluster.size());
+		std::copy_if(rCluster.begin(), rCluster.end(), std::back_inserter(outsideSphere), [&](Point* pPoint) {
+				const auto& rPointXYZ = pPoint->xyz.cast<double>();
+				const double distanceToCenter = Math::CalcPointToPointDistance3D(rPointXYZ, scopeCenter);
+				return (distanceToCenter + maxDistanceToCenter >= maxDistanceBetweenPoints);
+			});
+
+		for (int i = 0; i < outsideSphere.size(); ++i) {
+			const auto& rFirstPoint = outsideSphere[i]->xyz.cast<double>();
+
+			for (int j = i + 1; j < outsideSphere.size(); ++j) {
+				const auto& rSecondPoint = outsideSphere[j]->xyz.cast<double>();
+				const double localDistance = Math::CalcPointToPointDistance3D(rFirstPoint, rSecondPoint);
+
+				if (localDistance > maxDistanceBetweenPoints) {
+					maxDistanceBetweenPoints = localDistance;
+					firstDiagonalEnd = rFirstPoint;
+					secondDiagonalEnd = rSecondPoint;
+				}
+			}
+		}
+
+		return std::pair<Math::Point3D, Math::Point3D>(firstDiagonalEnd, secondDiagonalEnd);
+	}
+	
+	Math::Point3D CalculateFarthestPointFromLine(const std::vector<Point*>& rCluster, const Math::Line3D& rLine) {
+		Math::Point3D farthestFromLine;
+		double maxDistanceFromLine = 0.0;
+
+		for (const auto pPoint : rCluster) {
+			const auto& rPoint = pPoint->xyz.cast<double>();
+			const double localDistance = Math::CalcPointToLineDistance3D(rPoint, rLine);
+
+			if (localDistance > maxDistanceFromLine) {
+				maxDistanceFromLine = localDistance;
+				farthestFromLine = rPoint;
+			}
+		}
+
+		return farthestFromLine;
+	}
+	
+	Math::Point3D CalculateFarthestPointFromPlaneAndPoint(const std::vector<Point*>& rCluster,
+		const Math::Plane3D& rPlane, const Math::Point3D& rPoint) {
+		Math::Point3D farthestFromPlaneAndPoint;
+		double maxDistanceFromPlaneAndPoint = 0.0;
+
+		for (const auto pNextPoint : rCluster) {
+			const auto& rNextPoint = pNextPoint->xyz.cast<double>();
+			double localDistance = Math::CalcPointToPlaneDistance3D(rNextPoint, rPlane);
+			localDistance += Math::CalcPointToPointDistance3D(rNextPoint, rPoint);
+
+			if (localDistance > maxDistanceFromPlaneAndPoint) {
+				maxDistanceFromPlaneAndPoint = localDistance;
+				farthestFromPlaneAndPoint = rNextPoint;
+			}
+		}
+
+		return farthestFromPlaneAndPoint;
+	}
+
+	double CalculateWallsFittingRMSE(const std::vector<Point*>& rCluster, const std::vector<Math::Plane3D>& rWalls) {
+		const double wallsFittingSquareError = std::accumulate(rCluster.begin(), rCluster.end(), 0.0,
+			[&](double init, Point* pPoint) {
+				const auto& rPoint = pPoint->xyz.cast<double>();
+				std::vector<double> distances;
+				std::transform(rWalls.begin(), rWalls.end(), std::back_inserter(distances), [&](Math::Plane3D rWall) {
+					return Math::CalcPointToPlaneDistance3D(rPoint, rWall);
+					});
+				const double& minPointWallDistance = *std::min_element(distances.begin(), distances.end());
+				return init + pow(minPointWallDistance, 2);
+			});
+		return sqrt(wallsFittingSquareError / rCluster.size());
 	}
 };
 
